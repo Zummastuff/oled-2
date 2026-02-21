@@ -1,0 +1,161 @@
+#include <ESP8266WiFi.h>
+#include <DNSServer.h>
+#include <ESP8266WebServer.h>
+#include <EEPROM.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+#define OLED_RESET -1
+#define EEPROM_SIZE 256
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+const char* ssid = "Balqis_OLED_PRO";
+const char* wifiPass = "12345678";
+const char* loginPass = "balqis123";
+
+DNSServer dnsServer;
+ESP8266WebServer server(80);
+const byte DNS_PORT = 53;
+
+String slots[3];
+int activeSlot = 0;
+int fontSize = 1;
+int scrollX = 0;
+
+
+// ===== EEPROM FUNCTION =====
+void saveSlot(int slot, String data) {
+  int base = slot * 60;
+  for (int i = 0; i < 60; i++) {
+    if (i < data.length())
+      EEPROM.write(base + i, data[i]);
+    else
+      EEPROM.write(base + i, 0);
+  }
+  EEPROM.commit();
+}
+
+String readSlot(int slot) {
+  String data = "";
+  int base = slot * 60;
+  for (int i = 0; i < 60; i++) {
+    char c = EEPROM.read(base + i);
+    if (c != 0) data += c;
+  }
+  return data;
+}
+
+
+// ===== LOGIN PAGE =====
+void handleLogin() {
+  String page = "<h2>Login</h2><form action='/auth'>";
+  page += "<input type='password' name='pass'>";
+  page += "<button>Masuk</button></form>";
+  server.send(200, "text/html", page);
+}
+
+void handleAuth() {
+  if (server.hasArg("pass") && server.arg("pass") == loginPass) {
+    server.sendHeader("Location","/panel");
+    server.send(303);
+  } else {
+    server.send(200,"text/html","Password salah!");
+  }
+}
+
+
+// ===== PANEL =====
+void handlePanel() {
+
+  String page = "<h2>OLED Control</h2>";
+  page += "<form action='/set'>";
+  page += "Teks: <input name='msg' maxlength='60'><br><br>";
+  page += "Slot: <select name='slot'>";
+  page += "<option value='0'>Slot 1</option>";
+  page += "<option value='1'>Slot 2</option>";
+  page += "<option value='2'>Slot 3</option>";
+  page += "</select><br><br>";
+  page += "Font Size: <select name='font'>";
+  page += "<option value='1'>Small</option>";
+  page += "<option value='2'>Big</option>";
+  page += "</select><br><br>";
+  page += "<button type='submit'>Save</button></form>";
+
+  server.send(200,"text/html",page);
+}
+
+void handleSet() {
+  if (server.hasArg("msg") && server.hasArg("slot")) {
+    int s = server.arg("slot").toInt();
+    slots[s] = server.arg("msg");
+    activeSlot = s;
+    saveSlot(s, slots[s]);
+  }
+
+  if (server.hasArg("font")) {
+    fontSize = server.arg("font").toInt();
+    EEPROM.write(180, fontSize);
+    EEPROM.commit();
+  }
+
+  server.sendHeader("Location","/panel");
+  server.send(303);
+}
+
+
+// ===== SETUP =====
+void setup() {
+
+  EEPROM.begin(EEPROM_SIZE);
+  Serial.begin(115200);
+
+  display.begin(SSD1306_SWITCHCAPVCC, 0x3C);
+
+  for(int i=0;i<3;i++)
+    slots[i] = readSlot(i);
+
+  fontSize = EEPROM.read(180);
+  if(fontSize<1 || fontSize>2) fontSize=1;
+
+  WiFi.softAP(ssid, wifiPass);
+  dnsServer.start(DNS_PORT, "*", WiFi.softAPIP());
+
+  server.on("/", handleLogin);
+  server.on("/auth", handleAuth);
+  server.on("/panel", handlePanel);
+  server.on("/set", handleSet);
+  server.onNotFound(handleLogin);
+  server.begin();
+}
+
+
+// ===== LOOP =====
+void loop() {
+
+  dnsServer.processNextRequest();
+  server.handleClient();
+
+  display.clearDisplay();
+  display.setTextSize(fontSize);
+  display.setTextColor(SSD1306_WHITE);
+
+  String text = slots[activeSlot];
+
+  int textWidth = text.length() * 6 * fontSize;
+
+  if (textWidth > SCREEN_WIDTH) {
+    display.setCursor(-scrollX, 0);
+    display.print(text);
+    scrollX++;
+    if (scrollX > textWidth) scrollX = 0;
+  } else {
+    display.setCursor(0, 0);
+    display.print(text);
+  }
+
+  display.display();
+  delay(40);
+}
